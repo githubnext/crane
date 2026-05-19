@@ -1,0 +1,13 @@
+# Target tree
+
+This directory is where the agent will land the TypeScript surface and the Go
+core (under `native/`). Crane creates files here during iterations — they should
+not exist before the first iteration.
+
+The evaluator expects a driver at one of:
+- `run_case.mjs`  (run with `node`)
+- `run_case.js`   (run with `node`)
+- `run_case.ts`   (run with `bun`)
+
+The driver reads one parity case as JSON on stdin and prints the result as JSON
+on stdout. See `../../evaluate.py` for the contract.
