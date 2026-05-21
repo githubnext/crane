@@ -119,15 +119,23 @@ Before proposing a migration, **read the repository**:
 - How big is the codebase? Roughly how many modules?
 - Are there obvious seams (a `core/` directory, a service boundary, a routing layer)?
 - Are there clear pain points — slow paths, unmaintainable areas, outdated runtimes?
+- Will the target stack require new build-system scaffolding that does not exist yet (for example, adding Go tooling to a TypeScript project)?
 
-Then ask the user the four questions every migration needs:
+Then ask the user the questions every migration needs:
 
 1. **From what to what?** Source language(s) and version(s), target language(s) and runtime. A migration can have multiple target languages — e.g. TypeScript with a Go core for hot paths.
-2. **Strategy: in-place or greenfield?** Default to `auto` and let Crane decide on its first run unless the user has a strong preference.
+2. **How often should the stepwise migrator run?** Choose a per-migration cadence such as `every 1h`, `every 6h`, `daily`, or `weekly`. Consider migration complexity, how often the team can review changes, and risk tolerance. Use this as the migration's `schedule:` value.
+3. **Repo/setup scenario.** Is this an existing repo being migrated in place, a new repo for a new version in a different language, a hot-swap where old and new implementations coexist during cutover, or something else?
+4. **API and boundary plan.** Should existing public APIs stay in the current language while only hot loops or selected components move, or is the entire project moving to the new language? If only part of the project moves, identify the bridge boundary (FFI, WASM, subprocess, HTTP, package boundary, etc.).
+5. **Strategy: in-place or greenfield?** Default to `auto` and let Crane decide on its first run unless the user has a strong preference.
    - **In-place (strangler-fig)** keeps the system live throughout — recommended for anything in production or with external consumers.
    - **Greenfield** rebuilds in parallel and cuts over — only choose this when the source is small, self-contained, and you can afford a cutover window.
-3. **Source and target paths.** Where does the source live now, and where should the migrated code land? For polyglot targets, list a path per target language.
-4. **Verification.** How do we know the migration is still working after each step? Typically: existing test suite passes, plus a parity check on a corpus of inputs. If there's no test suite, that's milestone zero — Crane should land one before migrating anything.
+6. **Source and target paths.** Where does the source live now, and where should the migrated code land? For polyglot targets, list a path per target language.
+7. **Verification.** How do we know the migration is still working after each step? Typically: existing test suite passes, plus a parity check on a corpus of inputs. If there's no test suite, that's milestone zero — Crane should land one before migrating anything.
+
+If the answers imply a new target build system, add an explicit milestone before code migration begins to scaffold and verify that build system. That milestone might include `go.mod`, toolchain setup, package scripts, CI updates, and a smoke test.
+
+This applies both to greenfield rewrites and to partial migrations such as moving hot loops into Go or Rust while keeping the existing API surface in TypeScript, Python, or another current language.
 
 Help the user create the migration as a GitHub issue using the **Crane Migration** issue template. See [`create-migration.md`](create-migration.md) for a detailed guide.
 
