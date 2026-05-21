@@ -133,7 +133,7 @@ Then ask the user the questions every migration needs:
 6. **Source and target paths.** Where does the source live now, and where should the migrated code land? For polyglot targets, list a path per target language.
 7. **Verification.** How do we know the migration is still working after each step? Typically: existing test suite passes, plus a parity check on a corpus of inputs. If there's no test suite, that's milestone zero — Crane should land one before migrating anything.
 
-If the answers imply a new target build system, add an explicit milestone before code migration begins to scaffold and verify that build system (for example `go.mod`, toolchain setup, package scripts, CI updates, and a smoke test). This applies both to greenfield rewrites and to partial migrations such as moving hot loops into Go or Rust while keeping the existing API surface in TypeScript, Python, or another current language.
+If the answers imply a new target build system, add an explicit milestone before code migration begins to scaffold and verify that build system. That milestone might include `go.mod`, toolchain setup, package scripts, CI updates, and a smoke test. This applies both to greenfield rewrites and to partial migrations such as moving hot loops into Go or Rust while keeping the existing API surface in TypeScript, Python, or another current language.
 
 Help the user create the migration as a GitHub issue using the **Crane Migration** issue template. See [`create-migration.md`](create-migration.md) for a detailed guide.
 
