@@ -15,7 +15,7 @@ schedule: every 6h
 strategy: auto                   # in-place | greenfield | auto
 source-language: REPLACE         # e.g. python, ruby, perl
 target-languages: [REPLACE]      # e.g. [typescript], [typescript, go], [kotlin]
-target-metric: 1.0               # migration is complete when health score reaches this
+target-metric: 1.0               # completion candidate when health score reaches this
 metric_direction: higher
 ---
 
@@ -60,6 +60,23 @@ REPLACE_WITH_YOUR_VERIFICATION_COMMAND
 ```
 
 The metric is `migration_score` (0.0–1.0). **Higher is better.** Optional companion fields: `progress`, `parity_passing`, `parity_total`, `source_tests_passing`, `target_tests_passing`, `perf_ratio`.
+
+## Completion Gate
+
+<!--
+Define the deterministic final gate. Crane must not mark this migration complete
+from migration_score alone; completion requires current PR-head checks to pass.
+Name the command, CI job, or check-run that proves cutover/deletion readiness.
+-->
+
+- **Gate command/check**: REPLACE (e.g. `make migration-completion-gate`, `Migration Completion / gate`)
+- **Required evidence**:
+  - source-side and target-side tests pass
+  - parity/golden fixture corpus passes
+  - public API or CLI compatibility is preserved
+  - source implementation is deleted or callers route through the target implementation
+  - benchmark/performance bounds pass
+  - approved exceptions count is zero
 
 ## Out of scope
 
