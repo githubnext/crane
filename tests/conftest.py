@@ -35,6 +35,9 @@ _funcs = {
     "slugify_issue_title": crane_scheduler.slugify_issue_title,
     "parse_link_header": crane_scheduler.parse_link_header,
     "is_unconfigured": crane_scheduler.is_unconfigured,
+    "is_completed_state": crane_scheduler.is_completed_state,
     "check_skip_conditions": crane_scheduler.check_skip_conditions,
+    "evaluate_completed_label_recovery": crane_scheduler.evaluate_completed_label_recovery,
+    "get_pr_head_check_gate": crane_scheduler.get_pr_head_check_gate,
     "select_migration": crane_scheduler.select_migration,
 }

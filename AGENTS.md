@@ -37,6 +37,7 @@ A **migration** defines a single port from a source language/runtime to a target
 - **Target**: language(s), runtime, and paths being migrated *to* (multiple target languages allowed — e.g. TypeScript with a Go core for hot paths)
 - **Strategy**: `in-place`, `greenfield`, or `auto`
 - **Verification**: a command that outputs a JSON health score combining correctness with progress
+- **Completion Gate**: deterministic PR-head CI or check-run evidence required before Crane may mark the migration complete
 
 Migrations can be:
 
@@ -70,13 +71,14 @@ The workflow (`workflows/crane.md`) is compiled by `gh aw compile` into `.github
    - **Subsequent iterations**: read the plan, pick the next milestone, implement it, verify, accept or reject
 5. Commits accepted changes to `crane/<migration-name>`
 6. Updates the state file with iteration history, plan changes, and the new health score
-7. If the migration has a `target-metric` and the health score reaches it (typically `1.0` for "fully migrated and verified"), marks it as completed
+7. If the migration has a `target-metric` and the health score reaches it (typically `1.0` for "fully migrated and verified"), records a completion candidate
+8. Marks the migration complete only after the current Crane PR head has deterministic terminal-success checks
 
 Branch freshness is handled by the iteration loop: each iteration's branch-setup step fast-forwards or merges `origin/main` into the `crane/*` branch as needed.
 
 ### Verification (the Health Score)
 
-Each migration defines a verification command that prints JSON containing `migration_score` — a number in `[0.0, 1.0]` where `1.0` means the migration is finished and everything works.
+Each migration defines a verification command that prints JSON containing `migration_score` — a number in `[0.0, 1.0]` where `1.0` means the migration has reached its target and is ready for the deterministic completion gate.
 
 The recommended convention is:
 
@@ -87,6 +89,8 @@ migration_score = correctness_gate × progress
 where `correctness_gate` is `1.0` only when **all** of source-side tests, target-side tests, and parity tests pass — otherwise `0.0`. This makes the score a strict ratchet: any correctness regression collapses it to zero, and the iteration is rejected.
 
 Verification commands typically also emit companion fields (`progress`, `parity_passing`, `parity_total`, `source_tests_passing`, `target_tests_passing`, `perf_ratio`) that Crane logs in iteration history and status comments. These are not used for the accept/reject decision but make the state file far more useful for humans reviewing progress.
+
+Final completion is stricter than the health score. Crane must not mark `Completed: true` from repo-memory, historical score, or a same-run sandbox result alone. A goal-oriented migration becomes complete only when the current Crane PR head has terminal-success checks for the migration's declared completion gate.
 
 ### Strategy: in-place vs greenfield
 
@@ -115,8 +119,8 @@ Verification commands typically also emit companion fields (`progress`, `parity_
 - The default branch is automatically merged into all `crane/*` branches whenever it changes
 - Issue-based migrations are discovered via the `crane-migration` label; the issue body is the migration definition
 - A status comment (marked with `<!-- CRANE:STATUS -->`) is maintained on every migration issue (the earliest bot comment, edited in place each iteration), and a per-iteration comment is posted after each iteration
-- Migrations can be **goal-oriented** (run until `target-metric` is reached — typical, since you want to finish) or **open-ended** (run forever, polishing). When a goal-oriented migration completes, the `crane-migration` label is removed and `crane-completed` is added (for issue-based migrations)
-- When proposing a new migration, always confirm the four core questions with the user: source-to-target, strategy, paths, verification
+- Migrations can be **goal-oriented** (run until `target-metric` is reached and deterministic PR-head checks pass — typical, since you want to finish) or **open-ended** (run forever, polishing). When a goal-oriented migration completes, the `crane-migration` label is removed and `crane-completed` is added (for issue-based migrations)
+- When proposing a new migration, always confirm the five core questions with the user: source-to-target, strategy, paths, verification, deterministic completion gate
 
 ## Adding a New Migration
 
@@ -125,7 +129,7 @@ See `create-migration.md` for a step-by-step guide. In short:
 ### Option A: Directory-based (preferred when you need a parity corpus or evaluator)
 
 1. Create `.crane/migrations/<name>/` with a `migration.md` and `code/` directory
-2. Define Source, Target, Strategy, and Verification in `migration.md`
+2. Define Source, Target, Strategy, Verification, and Completion Gate in `migration.md`
 3. Add the evaluator script and any parity fixtures to `code/`
 4. Test the verification command locally — it should print valid JSON with `migration_score`
 5. The next scheduled run picks it up automatically
@@ -133,7 +137,7 @@ See `create-migration.md` for a step-by-step guide. In short:
 ### Option B: Issue-based (quickest way to start)
 
 1. Open a new issue using the "Crane Migration" issue template
-2. Fill in Source, Target, Strategy, and Verification in the issue body
+2. Fill in Source, Target, Strategy, Verification, and Completion Gate in the issue body
 3. Ensure the `crane-migration` label is applied
 4. The next scheduled run picks it up automatically
 5. Monitor progress via the status comment and per-run comments on the issue

@@ -27,6 +27,10 @@ permissions: read-all
 
 timeout-minutes: 45
 
+concurrency:
+  group: crane-${{ github.repository }}
+  cancel-in-progress: false
+
 network:
   allowed:
   - defaults
@@ -35,10 +39,10 @@ network:
   - rust
   - java
   - dotnet
-  - golang
+  - go
 
 safe-outputs:
-  max-patch-size: 20480
+  max-patch-size: 10240
   add-comment:
     max: 7
     target: "*"
@@ -46,7 +50,7 @@ safe-outputs:
   create-pull-request:
     draft: true
     labels: [automation, crane]
-    protected-files: fallback-to-issue
+    protected-files: allowed
     preserve-branch-name: true
     max: 1
   push-to-pull-request-branch:
@@ -173,13 +177,14 @@ The **migration name** is the filename without `.md`.
 
 ### Issue-based migrations
 
-Migrations can also be defined as GitHub issues with the `crane-migration` label. The issue body uses the same format as a `migration.md` file (Source, Target, Strategy, Verification sections). The **migration name** is derived from the issue title (slugified to lowercase with hyphens).
+Migrations can also be defined as GitHub issues with the `crane-migration` label. The issue body uses the same format as a `migration.md` file (Source, Target, Strategy, Verification, and Completion Gate sections). The **migration name** is derived from the issue title (slugified to lowercase with hyphens).
 
 The pre-step fetches open issues with the `crane-migration` label via the GitHub API and writes each issue body to a temporary file for scheduling. Issue-based migrations participate in the same scheduling and selection logic as file-based migrations.
 
 When a migration is issue-based, `/tmp/gh-aw/crane.json` includes:
 - **`selected_issue`**: The issue number (e.g., `42`) if the selected migration came from an issue, or `null` if it came from a file.
 - **`issue_migrations`**: A mapping of migration name → issue number for all issue-based migrations found.
+- **`stale_completed_state`**: Issue-based migrations whose completion state is not trustworthy. This includes active issues that still have `crane-migration` even though repo-memory says `Completed: true`, and completed-label issues whose current PR-head completion gate did not pass.
 
 ### Reading Migrations
 
@@ -193,6 +198,7 @@ The pre-step has already determined which migration to run. Read `/tmp/gh-aw/cra
 - **`selected_strategy`**: The `strategy` value from the migration's frontmatter — one of `"in-place"`, `"greenfield"`, or `"auto"`. If `"auto"`, the agent must pick on the first iteration and write the chosen strategy back into the state file's Machine State table.
 - **`state_file_size_bytes`** / **`state_file_max_bytes`**: For rolling-compaction decisions (see [Update Rules](#update-rules)).
 - **`issue_migrations`**: A mapping of migration name → issue number for all discovered issue-based migrations.
+- **`stale_completed_state`**: A list of issue-based migrations where repo-memory still says `Completed: true`, but the issue label state or PR-head completion gate says the migration is not safely complete; treat this as stale memory, not as permission to finish.
 - **`deferred`**: Other migrations that were due but will be handled in future runs.
 - **`unconfigured`**: Migrations that still have the sentinel or placeholder content.
 - **`skipped`**: Migrations not due yet based on their per-migration schedule, or completed/paused.
@@ -203,10 +209,12 @@ The pre-step has already determined which migration to run. Read `/tmp/gh-aw/cra
 
 If `selected` is not null:
 1. Read the migration file from the `selected_file` path.
-2. Parse the sections: Source, Target, Strategy, Verification.
+2. Parse the sections: Source, Target, Strategy, Verification, and Completion Gate.
 3. Read the current state of all source and target paths.
 4. Read the state file `{selected}.md` from the repo-memory folder. This contains the Machine State table, the Migration Plan, lessons, blockers, and iteration history.
 5. If `selected_issue` is not null, also read the issue comments for any human steering input.
+6. If `selected` appears in `stale_completed_state`, ignore any pre-existing `Completed: true`, `Completed Reason`, target-satisfying `best_metric`, or `crane-completed` label as a completion signal. Restore the issue to active migration state by ensuring `crane-migration` is present and `crane-completed` is absent unless the deterministic completion gate passes later in this run. First run the current verification contract and only enter the completion-candidate path after a fresh accepted iteration satisfies the target metric.
+7. Before making code changes, inspect the state file's `Completion Candidate` field. If it is `true`, run the deterministic completion gate in [Halting Condition](#halting-condition). Only finalize completion if the current PR head checks pass. If the gate is failing, fix the failing PR checks instead of starting unrelated migration work. If the gate is pending or unavailable, leave the issue active and update `Completion Gate Status`.
 
 ## Multiple Migrations
 
@@ -237,7 +245,7 @@ schedule: every 1h
 
 ### Target Metric (Halting Condition)
 
-Migrations should usually specify `target-metric: 1.0` in the frontmatter — the typical "completed when fully migrated and verified" setting. When the health score reaches the target, the migration completes: the `crane-migration` label is removed, `crane-completed` is added (for issue-based migrations), and the state file is marked `Completed: true`.
+Migrations should usually specify `target-metric: 1.0` in the frontmatter — the typical "completed when fully migrated and verified" setting. When the fresh health score from an accepted iteration reaches the target, the migration becomes a completion candidate. Final completion happens only after a deterministic PR-head completion gate passes: the `crane-migration` label is removed, `crane-completed` is added (for issue-based migrations), and the state file is marked `Completed: true`.
 
 Migrations without a `target-metric` are **open-ended** and run indefinitely (rare for migrations — usually a sign you actually want goal-oriented).
 
@@ -249,12 +257,13 @@ Migrations whose verification naturally produces a "lower is better" metric (e.g
 
 ## Migration Definition
 
-Each migration file defines four things:
+Each migration file defines five things:
 
 1. **Source**: language, version, runtime, and paths being migrated *from*
 2. **Target**: language(s), runtime, and paths being migrated *to* (a migration can have multiple target languages, e.g. TypeScript + Go core)
 3. **Strategy**: `in-place`, `greenfield`, or `auto`
 4. **Verification**: A command that outputs JSON containing `migration_score`
+5. **Completion Gate**: Deterministic CI or check-run evidence required before Crane may mark the migration complete
 
 ### Setup Guard
 
@@ -519,12 +528,13 @@ If `status == "failure"`, **fix and retry — do not revert, do not accept**:
 3. Ensure the migration issue exists (see [Migration Issue](#migration-issue) below) — for file-based migrations with no migration issue yet (`selected_issue` is null in `/tmp/gh-aw/crane.json`), create one and record its number in the state file's `Issue` field.
 4. Update the state file `{migration-name}.md` in the repo-memory folder:
    - **⚙️ Machine State** table: reset `consecutive_errors` to 0, set `best_metric` (the new `migration_score`), increment `iteration_count`, set `last_run` to current UTC, append `"accepted"` to `recent_statuses` (keep last 10), set `paused` to false.
+   - If this migration was listed in `stale_completed_state`, also set `Completed: false` and `Completed Reason: —` before checking the halting condition. Do not carry a stale completion marker forward unless the current accepted iteration completes again.
    - **🪜 Milestones**: update the relevant milestone's status — typically `done` if the milestone was fully completed, otherwise leave `in-progress` and update its notes. If the milestone is done, the next milestone in the list becomes the new **🎯 Current Focus**.
    - Prepend the shared Accepted Iteration Summary to **📊 Iteration History**.
    - Update **📚 Lessons Learned** if this iteration revealed something new (e.g. a bridging trick, a parity surprise, a perf trap).
    - Update **🔭 Future Work** if this iteration opened new threads.
 5. **Update the migration issue**: edit the status comment and post a per-iteration comment using the shared Accepted Iteration Summary.
-6. **Check halting condition** (see [Halting Condition](#halting-condition)): if `target-metric` is set, compare the new `best_metric` against it. For `higher` direction: completed when `best_metric >= target-metric`. When the target is met, mark the migration as completed.
+6. **Check halting condition** (see [Halting Condition](#halting-condition)): if `target-metric` is set, compare the new `best_metric` from this accepted iteration against it. For `higher` direction, the target is reached when `best_metric >= target-metric`. Reaching the target metric does **not** complete the migration in this run. It creates a completion candidate: set `Completion Candidate: true`, set `Completion Gate: pr-head-checks`, set `Completion Gate Status: pending`, keep `Completed: false`, keep `Completed Reason: —`, and leave the `crane-migration` label on the issue. Completion is finalized only by a later run after the pushed PR head's deterministic checks are observed green.
 
 **If the score did not improve**:
 1. Discard the code changes (do not commit them to the long-running branch).
@@ -627,26 +637,46 @@ After **every iteration** (accepted, rejected, or error), post a **new comment**
 - For issue-based migrations, the source issue body IS the migration definition — do not modify it (the user owns it).
 - For file-based migrations, the migration issue body is informational and may be lightly updated, but the migration file (`migration.md`) remains the source of truth.
 - The `crane-migration` label must remain on the issue for the migration to be discovered. When a migration completes, the label is removed and replaced with `crane-completed`.
+- If an issue has `crane-migration` but repo-memory says `Completed: true`, the active label wins. Treat the completed state as stale until the current verification contract passes in a fresh accepted iteration and the deterministic completion gate passes on the pushed PR head.
+- If an issue has `crane-completed` but the scheduler selected it in `stale_completed_state`, the completed label is stale. Restore `crane-migration`, remove `crane-completed`, and work the migration until the deterministic completion gate passes.
 - Closing the migration issue stops the migration from being discovered. Do NOT close the migration issue when the PR is merged — the branch continues to accumulate future iterations until the target metric is reached.
 - Migration issues are labeled `[crane-migration, automation, crane]`.
 
 ## Halting Condition
 
-Migrations are usually **goal-oriented** — you want to finish. Set `target-metric: 1.0` in the frontmatter and Crane stops the migration when the health score reaches 1.0 (which, with the recommended `correctness × progress` convention, means "fully migrated and verified").
+Migrations are usually **goal-oriented** — you want to finish. Set `target-metric: 1.0` in the frontmatter to nominate a migration for completion once the health score reaches 1.0 (which, with the recommended `correctness × progress` convention, means "fully migrated and verified"). The metric is necessary but not sufficient: final completion always requires a deterministic PR-head completion gate.
 
 ### How It Works
 
 1. Parse the `target-metric` value from the migration's YAML frontmatter (if present).
-2. After each **accepted** iteration, compare the new `best_metric` against the `target-metric`.
-3. For `higher` direction (default): completed when `best_metric >= target-metric`.
-4. For `lower` direction: completed when `best_metric <= target-metric`.
-5. When completed:
+2. After each **accepted** iteration, compare the new `best_metric` from that iteration against the `target-metric`.
+3. For `higher` direction (default): the target is reached when `best_metric >= target-metric`.
+4. For `lower` direction: the target is reached when `best_metric <= target-metric`.
+5. When the target is reached, create a completion candidate instead of completing immediately:
+   - Set `Completion Candidate: true`.
+   - Set `Completion Gate: pr-head-checks`.
+   - Set `Completion Gate Status: pending`.
+   - Keep `Completed: false` and `Completed Reason: —`.
+   - For issue-based migrations, keep the `crane-migration` label and do not add `crane-completed`.
+   - Update the status comment to Active with a note that the migration is waiting on deterministic PR-head checks.
+6. On the next run while `Completion Candidate: true`, run the deterministic completion gate before making code changes:
+   - Resolve the migration PR from `existing_pr` or the state file's `PR` field.
+   - Query the PR's current head SHA via the GitHub API.
+   - Query check-runs/check-suites for that exact PR head SHA, or use `gh pr checks "$PR" --json name,conclusion,state,startedAt,completedAt`.
+   - The gate passes only if every check for the current PR head is terminal success. Treat missing checks, pending checks, queued checks, failing checks, cancelled checks, timed-out checks, stale checks, and action-required checks as not passing.
+   - If the gate is pending or missing, leave `Completion Candidate: true`, keep `Completed: false`, ensure `crane-migration` is present, ensure `crane-completed` is absent, set `Completion Gate Status: pending:<sha or reason>`, and end without completing.
+   - If the gate fails, leave `Completion Candidate: true`, keep `Completed: false`, ensure `crane-migration` is present, ensure `crane-completed` is absent, set `Completion Gate Status: failing:<signature>`, and fix the failing PR checks.
+7. Only when the deterministic completion gate passes:
    - Set `Completed: true` in the Machine State table.
-   - Set `Completed Reason` to a human-readable message (e.g., `target metric 1.0 reached with value 1.0`).
+   - Set `Completed Reason` to a human-readable message that includes both the target metric and PR-head check evidence (e.g., `target metric 1.0 reached; PR #123 head abc1234 checks passed`).
+   - Set `Completion Candidate: false`.
+   - Set `Completion Gate Status: passed:<sha>`.
    - **For issue-based migrations**: remove the `crane-migration` label, add the `crane-completed` label.
    - Update the status comment to ✅ Completed.
    - Post a celebratory per-iteration comment: `🎉 **Migration complete!** {source} → {target} finished after {N} iterations.`
    - The migration will not be selected for future runs.
+
+Do not enter final completion from repo-memory alone. A stored `Completed: true`, old `Completed Reason`, historical `best_metric`, or same-run sandbox score is only evidence about a previous or local run. Final completion requires deterministic evidence from the current PR head after safe outputs have pushed the branch and GitHub Actions has reported the head checks.
 
 ### Open-Ended Migrations
 
@@ -696,6 +726,9 @@ When creating or updating a migration's state file, use this structure:
 | Pause Reason | — |
 | Completed | false |
 | Completed Reason | — |
+| Completion Candidate | false |
+| Completion Gate | pr-head-checks |
+| Completion Gate Status | — |
 | Consecutive Errors | 0 |
 | Recent Statuses | — |
 
@@ -792,8 +825,11 @@ All iterations in reverse chronological order (newest first).
 | Issue | `#number` or `—` | Single migration issue |
 | Paused | `true` or `false` | Whether the migration is paused |
 | Pause Reason | text or `—` | `manual`, `consecutive errors`, `ci-fix-exhausted: <sig>`, `stuck in CI fix loop: <sig>`, `ci-timeout` |
-| Completed | `true` or `false` | Whether the target metric has been reached |
-| Completed Reason | text or `—` | e.g., `target metric 1.0 reached with value 1.0` |
+| Completed | `true` or `false` | Whether the deterministic completion gate has passed and the migration is final |
+| Completed Reason | text or `—` | e.g., `target metric 1.0 reached; PR #123 head abc1234 checks passed` |
+| Completion Candidate | `true` or `false` | Whether the target metric has been reached and the migration is waiting for deterministic PR-head checks |
+| Completion Gate | text | Deterministic gate required for final completion. Default: `pr-head-checks` |
+| Completion Gate Status | text or `—` | Latest gate result, such as `pending:<sha>`, `failing:<signature>`, or `passed:<sha>` |
 | Consecutive Errors | integer | Count of consecutive verification failures |
 | Recent Statuses | comma-separated | Last 10 outcomes: `accepted`, `rejected`, `error`, or `ci-fix-exhausted` |
 
