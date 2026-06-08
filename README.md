@@ -32,6 +32,7 @@ You create a **migration** — either as a GitHub issue (using the included issu
 2. **Target** — the language(s), runtime, and paths you're migrating *to* (a migration can have multiple target languages, e.g. TypeScript with a Go core for hot paths)
 3. **Strategy** — `in-place` (strangler-fig: swap module by module while keeping the system live) or `greenfield` (parallel rewrite), or `auto` to let Crane pick
 4. **Verification** — a command that outputs a JSON health score combining correctness (tests pass, behavior matches) with progress (how much has been migrated)
+5. **Completion Gate** — deterministic CI or check-run evidence on the Crane PR head before the migration can be marked complete
 
 Crane does the rest. On its **first run** for a migration, it inventories the source, decides a strategy if you left it on `auto`, and writes a living **plan** broken into milestones. On every scheduled run after that:
 
@@ -88,12 +89,12 @@ Strangler-fig migration of a Flask app to FastAPI, route by route. New routes re
 
 ## Adding a new migration
 
-Most migrations are **goal-oriented**: you want to finish. Set `target-metric: 1.0` (the default convention is `migration_score`, where 1.0 means fully ported and all verification passes). Open-ended migrations are unusual but legal — leave `target-metric` off and Crane keeps polishing forever.
+Most migrations are **goal-oriented**: you want to finish. Set `target-metric: 1.0` (the default convention is `migration_score`, where 1.0 means fully ported and all verification passes). Reaching that score creates a completion candidate; Crane marks the migration complete only after the current Crane PR head has deterministic terminal-success checks. Open-ended migrations are unusual but legal — leave `target-metric` off and Crane keeps polishing forever.
 
 ### Option A: From a GitHub issue (quickest)
 
 1. Open a new issue using the **Crane Migration** template (or manually apply the `crane-migration` label)
-2. Fill in Source, Target, Strategy, and Verification in the issue body
+2. Fill in Source, Target, Strategy, Verification, and Completion Gate in the issue body
 3. The next scheduled run picks it up automatically
 4. Monitor progress via the status comment and per-run comments on the issue
 5. Steer the migration by commenting on the issue — the agent reads new comments before each iteration
@@ -110,7 +111,7 @@ Most migrations are **goal-oriented**: you want to finish. Set `target-metric: 1
        └── ...
    ```
 
-2. Define Source, Target, Strategy, and Verification in `migration.md`.
+2. Define Source, Target, Strategy, Verification, and Completion Gate in `migration.md`.
 
 3. The next scheduled run picks it up automatically.
 
@@ -167,7 +168,7 @@ Crane treats planning as a first-class step:
 2. **Strategy** — If you set `strategy: auto`, Crane picks `in-place` or `greenfield` based on the inventory and writes a short rationale into the plan.
 3. **Milestones** — The plan breaks the migration into ordered milestones. For `in-place`, each milestone names a unit and how its callers will be re-routed. For `greenfield`, each milestone names a unit and how parity will be proven.
 4. **Execution** — Each subsequent iteration picks the next milestone, implements it, verifies, and updates the plan. The plan is a living document — milestones can be split, reordered, retired, or added as Crane learns.
-5. **Verification gates** — A milestone is only marked done when (a) source-side tests still pass, (b) target-side tests pass, (c) parity tests (if any) pass, and (d) the migration health score did not regress. Anything less and the iteration is rejected.
+5. **Verification gates** — A milestone is only marked done when (a) source-side tests still pass, (b) target-side tests pass, (c) parity tests (if any) pass, and (d) the migration health score did not regress. Final completion additionally requires deterministic PR-head checks. Anything less and the iteration is rejected or left as a completion candidate.
 
 See [`AGENTS.md`](AGENTS.md) for the full architecture.
 

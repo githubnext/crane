@@ -120,6 +120,7 @@ Before proposing a migration, **read the repository**:
 - Are there obvious seams (a `core/` directory, a service boundary, a routing layer)?
 - Are there clear pain points — slow paths, unmaintainable areas, outdated runtimes?
 - Will the target stack require new build-system scaffolding that does not exist yet (for example, adding Go tooling to a TypeScript project)?
+- What deterministic CI checks must be green before a migration can be called complete? Identify the exact command, workflow job, or check-run name that will prove cutover/deletion readiness on the Crane PR head.
 
 Then ask the user the questions every migration needs:
 
@@ -132,6 +133,13 @@ Then ask the user the questions every migration needs:
    - **Greenfield** rebuilds in parallel and cuts over — only choose this when the source is small, self-contained, and you can afford a cutover window.
 6. **Source and target paths.** Where does the source live now, and where should the migrated code land? For polyglot targets, list a path per target language.
 7. **Verification.** How do we know the migration is still working after each step? Typically: existing test suite passes, plus a parity check on a corpus of inputs. If there's no test suite, that's milestone zero — Crane should land one before migrating anything.
+8. **Deterministic completion gate.** What proves the migration is actually done, not just locally improved? Define the final gate as a deterministic command or CI check that runs on the Crane PR head and fails unless the system is cutover-ready. It should cover, as applicable: all source and target tests, parity/golden fixture corpus, public API or CLI compatibility, source-code deletion or routing through the target implementation, benchmark/performance bounds, and zero approved exceptions. The migration must not mark `Completed: true` from `migration_score` alone.
+
+Before creating the migration, make the completion gate real:
+
+- If the repository already has a suitable required CI check, name it in the migration's Verification/Completion Gate section and make sure the verification command's `migration_score` can reach `1.0` only when that check's underlying conditions are satisfied.
+- If the repository does not have a suitable gate, add a migration milestone before code migration begins to build it. For directory-based migrations, this usually means adding or updating the evaluator, parity/golden fixtures, and a CI job that runs the evaluator. For bare-markdown or issue-based migrations, this usually means adding a test/check command to the repo CI and referencing that check explicitly.
+- Ensure `target-metric: 1.0` is paired with this deterministic gate. Reaching the target metric should create a completion candidate; final completion happens only after the current Crane PR head has terminal-success checks.
 
 If the answers imply a new target build system, add an explicit milestone before code migration begins to scaffold and verify that build system. That milestone might include `go.mod`, toolchain setup, package scripts, CI updates, and a smoke test.
 

@@ -12,7 +12,7 @@ Crane is a GitHub Agentic Workflow that runs code migrations. Each migration is 
 .crane/migrations/<migration-name>/
 ├── migration.md             ← definition (Source, Target, Strategy, Verification)
 └── code/                    ← evaluator, parity corpus, supporting fixtures
-    ├── evaluate.py          ← outputs the JSON health score
+    ├── evaluate.py          ← outputs the JSON health score and completion-gate evidence
     ├── parity/              ← input/expected pairs the evaluator runs against
     └── ...
 ```
@@ -59,6 +59,7 @@ The target can be a single language or multiple languages with clear roles. Comm
 A good Crane migration has these properties:
 
 - **Verifiable**: There's a command that prints a JSON health score, and the score combines correctness (tests pass, behavior matches) with progress (how much has been ported).
+- **Deterministic at completion**: The final gate is a command or CI check on the Crane PR head, not a judgment call from the agent's sandbox. `migration_score` can reach `1.0` only when this gate's underlying conditions pass.
 - **Bounded scope**: The source paths are well-defined; out-of-scope files are off-limits.
 - **Decomposable**: The source can be broken into milestones that each fit in one iteration.
 - **Reversible per step**: A bad iteration can be discarded without leaving the system broken.
@@ -75,12 +76,13 @@ If unclear which layout fits, **ask the user**.
 
 ## Step 4: Write the Migration File
 
-The migration file (`migration.md` or `<name>.md`) defines four things:
+The migration file (`migration.md` or `<name>.md`) defines five things:
 
 1. **Source** — language, version, runtime, paths
 2. **Target** — language(s), runtime, paths (multiple targets allowed, e.g. TypeScript + Go core)
 3. **Strategy** — `in-place`, `greenfield`, or `auto`
 4. **Verification** — command that prints JSON with `migration_score` (0.0–1.0) and optionally companion fields
+5. **Completion Gate** — deterministic CI or check-run evidence required before Crane may mark the migration complete
 
 ### Frontmatter
 
@@ -91,12 +93,12 @@ timeout-minutes: 45           # Optional
 strategy: auto                # in-place | greenfield | auto
 source-language: python
 target-languages: [typescript, go]   # one or more
-target-metric: 1.0            # The migration is complete when health score reaches this
+target-metric: 1.0            # Creates a completion candidate when health score reaches this
 metric_direction: higher      # higher is better (default)
 ---
 ```
 
-`target-metric: 1.0` is the typical "completed when fully migrated and verified" setting. Omitting it makes the migration open-ended (Crane will keep polishing forever).
+`target-metric: 1.0` is the typical "candidate for completion when fully migrated and verified" setting. Omitting it makes the migration open-ended (Crane will keep polishing forever).
 
 ### Verification output
 
@@ -121,6 +123,8 @@ migration_score = correctness_gate × progress
 ```
 
 where `correctness_gate` is `1.0` only when **all** of `source_tests_passing`, `target_tests_passing`, and `parity_passing == parity_total` are true (otherwise `0.0`), and `progress` is the fraction of the source that has been ported and verified. This produces a clean ratchet: any regression in correctness drops the score to zero and the iteration is rejected; partial progress is rewarded; only a fully migrated, fully passing system reaches `1.0`.
+
+For goal-oriented migrations, `migration_score = 1.0` is still only a completion candidate. Final completion requires the deterministic PR-head gate to pass in GitHub checks after the Crane branch is pushed. Encode the same completion conditions in CI so the gate is reproducible outside the agent's sandbox.
 
 ### Body sections
 
@@ -156,6 +160,19 @@ where `correctness_gate` is `1.0` only when **all** of `source_tests_passing`, `
 
 The metric is `migration_score`. **Higher is better.** The script runs the source-side test suite, the target-side test suite, and a 200-case parity corpus, and prints the combined JSON.
 
+## Completion Gate
+
+The migration is complete only when the Crane PR head has terminal-success checks for:
+
+- source-side tests and target-side tests
+- parity/golden fixture corpus
+- public API or CLI compatibility
+- source implementation deletion or routing through the target implementation
+- benchmark/performance bounds
+- zero approved exceptions
+
+The evaluator and CI check must fail if any required condition is missing, pending, stale, or failing.
+
 ## Out of scope
 
 - `src/cli/` — CLI tool stays in Python
@@ -166,8 +183,9 @@ The metric is `migration_score`. **Higher is better.** The script runs the sourc
 
 1. Run the verification command locally and check the JSON output.
 2. Verify the source and target paths exist (or, for greenfield targets, the parent directory exists).
-3. Ensure no `<!-- CRANE:UNCONFIGURED -->`, `REPLACE`, or `TODO` placeholders remain.
-4. Ensure the migration name is unique.
+3. Verify the deterministic completion gate is named in the migration and exists as a local command or CI check. If it does not exist yet, make the first milestone "build completion gate" before any porting milestone.
+4. Ensure no `<!-- CRANE:UNCONFIGURED -->`, `REPLACE`, or `TODO` placeholders remain.
+5. Ensure the migration name is unique.
 
 ## Running Manually
 
@@ -180,7 +198,7 @@ The metric is `migration_score`. **Higher is better.** The script runs the sourc
 The quickest way:
 
 1. Open a new issue using the **Crane Migration** issue template (or create one manually with the `crane-migration` label).
-2. Fill in Source, Target, Strategy, and Verification — the format matches `migration.md`.
+2. Fill in Source, Target, Strategy, Verification, and Completion Gate — the format matches `migration.md`.
 3. The next scheduled run discovers the issue and includes it in scheduling.
 4. A status comment is posted/updated on the issue after each run.
 5. Per-iteration comments are posted with the Actions run link and a summary of what happened.
